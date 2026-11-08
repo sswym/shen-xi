@@ -61,8 +61,11 @@ export async function apply(ctx) {
     },
   })
 
-  const engine = new Engine({ ctx, root, qq, store: new SessionStore({ ctx, root, log }), log })
+  const store = new SessionStore({ ctx, root, log })
+  const engine = new Engine({ ctx, root, qq, store, log })
   engine.root = root
+
+  ctx.effect(() => store.watchDisposal(), 'companion.session-events')
 
   ctx.effect(() => {
     void qq.start().catch((error) => warn(`[companion] QQ 启动失败：${error?.message ?? error}`))

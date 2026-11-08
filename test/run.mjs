@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -377,6 +377,140 @@ test('session projection labels QQ, UI and proactive messages', () => {
     ['owner', 'ui', '界面测试'],
     ['her', 'ui', '嗯。'],
   ])
+})
+
+/** 最小 DSH sessionController：模拟“磁盘已删、内存仍 attached”的真实行为。 */
+function fakeSessionController() {
+  const stored = new Set()
+  const live = new Set()
+  const sessions = new Map()
+  const created = []
+  const makeSession = (id) => {
+    const events = []
+    return {
+      id,
+      seq: 0,
+      surface: { nodes: [] },
+      snapshotEvents: () => events.slice(),
+      eventAt: () => undefined,
+      append: (type, data) => { events.push({ type, data }) },
+    }
+  }
+  const register = (id) => {
+    stored.add(id)
+    live.add(id)
+    sessions.set(id, makeSession(id))
+  }
+  return {
+    stored,
+    live,
+    sessions,
+    created,
+    register,
+    /** 模拟删除：持久化里没了，但 attached 活体仍在内存。 */
+    remove(id) {
+      stored.delete(id)
+    },
+    persistence: {
+      async stat(id) {
+        return stored.has(id) ? { header: { id } } : undefined
+      },
+    },
+    controller: {
+      async create({ sessionId }) {
+        created.push(sessionId)
+        register(sessionId)
+        return { sessionId }
+      },
+      async resolveAgent(id) {
+        if (!live.has(id) || !sessions.has(id)) return { error: { code: 'session/not-found' } }
+        return { agent: { session: sessions.get(id) } }
+      },
+      async inspect(id) {
+        // 关键：DSH 对仍 attached 的会话会直接返回内存对象，删除后也会成功。
+        return { meta: { id } }
+      },
+      async list() {
+        // 关键：list() 把 attached 活体并进持久化列表，所以删除后仍会包含它。
+        return { items: [...new Set([...stored, ...live])].map((sessionId) => ({ sessionId })) }
+      },
+    },
+  }
+}
+
+test('session store recreates a session that vanished from persistence', async () => {
+  const home = await tempHome()
+  const root = join(home, 'companion')
+  try {
+    await saveConfig(root, { qq: { ownerId: 'OWNER' } })
+    await writeFile(join(root, 'session.json'), JSON.stringify({
+      version: 1, id: 'old', title: '陪伴 · 旧', ownerId: 'OWNER', nextTurn: 5, titled: true, migrated: true,
+    }) + '\n')
+    const fake = fakeSessionController()
+    fake.register('old')
+    const ctx = {
+      get: (name) => {
+        if (name === 'sessionController') return fake.controller
+        if (name === 'sessionPersistence') return fake.persistence
+        return undefined
+      },
+    }
+    const store = new SessionStore({ ctx, root, log: () => {}, livenessTtlMs: 0 })
+
+    const first = await store.beginTurn({ userText: '删除前' })
+    assert.equal(first.session.id, 'old')
+    const stable = await store.beginTurn({ userText: '删除前，再一条' })
+    assert.equal(stable.session.id, 'old', '健康会话不应被重建')
+    assert.equal(fake.created.length, 0)
+
+    fake.remove('old')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = await store.beginTurn({ userText: '删除后' })
+    assert.notEqual(second.session.id, 'old', '不应继续写已删除的会话')
+    assert.equal(fake.created.length, 1, '应新建一个会话')
+    assert.equal(store.session.id, second.session.id)
+    const pointer = JSON.parse(await readFile(join(root, 'session.json'), 'utf8'))
+    assert.equal(pointer.id, second.session.id, '指针应指向新会话')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('session store drops the session on DSH disposal events', async () => {
+  const home = await tempHome()
+  const root = join(home, 'companion')
+  try {
+    await saveConfig(root, { qq: { ownerId: 'OWNER' } })
+    await writeFile(join(root, 'session.json'), JSON.stringify({
+      version: 1, id: 'old', title: '陪伴 · 旧', ownerId: 'OWNER', nextTurn: 5, titled: true, migrated: true,
+    }) + '\n')
+    const fake = fakeSessionController()
+    fake.register('old')
+    const handlers = new Map()
+    const ctx = {
+      get: (name) => {
+        if (name === 'sessionController') return fake.controller
+        if (name === 'sessionPersistence') return fake.persistence
+        return undefined
+      },
+      on(name, fn) {
+        handlers.set(name, fn)
+        return () => handlers.delete(name)
+      },
+    }
+    const store = new SessionStore({ ctx, root, log: () => {} })
+    const off = store.watchDisposal()
+    const first = await store.beginTurn({ userText: '删除前' })
+    assert.equal(first.session.id, 'old')
+    handlers.get('api-session/removed')('old')
+    assert.equal(store.session, null, '删除事件应立即清掉内存会话')
+    const second = await store.beginTurn({ userText: '删除后' })
+    assert.notEqual(second.session.id, 'old')
+    assert.equal(fake.created.length, 1)
+    off()
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
 })
 
 test('QQ bridge sends OneBot HTTP requests and reads login info', async () => {
