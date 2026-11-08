@@ -1,0 +1,18 @@
+# 运行数据绝不上库（含人设记忆、日记、QQ 密钥）
+state.json
+memories.json
+embeddings.json
+session.json
+chat.jsonl
+chat.legacy.jsonl
+events/
+diary/
+notes/
+guests/
+config.json
+*.broken-*
+*.tmp
+
+# 环境
+node_modules/
+.DS_Store

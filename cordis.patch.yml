@@ -1,0 +1,5 @@
+# 把陪伴角色装进当前 profile。人格、状态和记忆都在 $DSH_HOME/companion，
+# 不写在这里；这里只插入 Host 插件本身。
+- insert:
+    - id: companion
+      name: 'dsh-companion'

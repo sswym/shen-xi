@@ -1,0 +1,49 @@
+{
+  "name": "shen-xi",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "一个有自己日子、心情、记忆和好感度的陪伴角色：会主动在 QQ 上找主人说话，也能在 DSH Web 里管理。",
+  "meta": {
+    "title": "陪伴 · 沈栖",
+    "description": "QQ 官方机器人陪伴插件：人格、生活、心情、好感度、长期记忆与主动消息；配置在 设置 → 陪伴。"
+  },
+  "main": "index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.6",
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.2 <0.3.0"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/run.mjs",
+    "check": "node --check index.js"
+  }
+}
