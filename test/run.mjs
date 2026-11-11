@@ -18,12 +18,12 @@ import {
   searchMemories, touchMemories,
 } from '../lib/store.js'
 import { QqBridge } from '../lib/qq.js'
-import { QqOfficialClient, officialMessage, splitBubbles, splitText } from '../lib/qq-official.js'
+import { QqOfficialClient, normalizeFaces, officialMessage, splitBubbles, splitText } from '../lib/qq-official.js'
 import { SessionStore } from '../lib/session-store.js'
 import { MemoryIndex } from '../lib/embeddings.js'
 import { __internals as mindInternals } from '../lib/mind.js'
 import { __internals as apiInternals } from '../lib/api.js'
-import { beatJitter, bubbleGap, humanDelay, sanitize, sleepState, typoFix, typoize } from '../lib/humanize.js'
+import { beatJitter, bubbleGap, humanDelay, naturalizePunctuation, sanitize, sleepState, stripRepeats, typoFix, typoize } from '../lib/humanize.js'
 import { __internals as engineInternals, Engine } from '../lib/engine.js'
 
 async function tempHome() {
@@ -308,6 +308,29 @@ test('memory and chat prompt lines include timestamps', () => {
   assert.match(chat, /\[11\/08 10:20\] 他：在吗/)
 })
 
+test('stripRepeats removes echoed sentences but keeps new content', () => {
+  const prior = ['那比我早。我赖到八点半才动。雾到现在还没散，站窗边上看，江那边一片白，什么都看不见。年糕还蹲沙发底下，叼着小鱼干不肯出来。']
+  const reply = '这么早到工位。我这雾还没散，江那边一片白。\n\n年糕昨晚把小鱼干藏沙发底下，现在还不肯出来。我就由着它，反正也饿不着。\n\n我上午大概就临那两页画册，手腕有点酸。'
+  const out = stripRepeats(reply, prior)
+  assert.ok(!out.includes('江那边一片白'), '雾的复述应被删掉')
+  assert.ok(!out.includes('沙发底下'), '年糕的复述应被删掉')
+  assert.ok(out.includes('这么早到工位'), '接他话的部分保留')
+  assert.ok(out.includes('画册'), '新内容保留')
+})
+
+test('stripRepeats keeps short echoes and never returns empty', () => {
+  assert.equal(stripRepeats('晚安。', ['晚安。雾大，明天出门记得看路。']), '晚安。')
+  const only = '雾到现在还没散，江那边一片白，什么都看不见。'
+  assert.equal(stripRepeats(only, [only]), only)
+})
+
+test('reply style mirrors short owner messages', () => {
+  const short = mindInternals.replyStyleHint({ mood: 1, energy: 80 }, '早就醒了呀')
+  assert.match(short, /只回一条/)
+  const long = mindInternals.replyStyleHint({ mood: 1, energy: 80 }, '今天早上出门的时候发现楼下那家面馆居然关门了，绕了很远才买到早饭')
+  assert.match(long, /两条/)
+})
+
 test('chat log keeps order and limits reads', async () => {
   const home = await tempHome()
   const root = join(home, 'companion')
@@ -579,6 +602,24 @@ test('official QQ events extract openid, text and event id', () => {
     d: { id: 'msg-2', content: '看看', author: { user_openid: 'OPENID-1' }, attachments: [{ content_type: 'image/png' }] },
   })
   assert.equal(withImage.text, '看看 [图片/附件]')
+
+  const withFace = officialMessage({
+    t: 'C2C_MESSAGE_CREATE',
+    d: {
+      id: 'msg-3',
+      content: '笑死 <faceType=3,faceId="344",ext="eyJ0ZXh0Ijoi5aSn5oCo56eNIn0=">',
+      author: { user_openid: 'OPENID-1' },
+    },
+  })
+  assert.equal(withFace.text, '笑死 [表情]')
+
+  const onlyFace = officialMessage({
+    t: 'C2C_MESSAGE_CREATE',
+    d: { id: 'msg-4', content: '<faceType=3,faceId="344">', author: { user_openid: 'OPENID-1' } },
+  })
+  assert.equal(onlyFace.text, '[表情]')
+  assert.equal(normalizeFaces('<faceType=3,faceId="1"><faceType=3,faceId="2">'), '[表情]')
+  assert.equal(normalizeFaces('<img src="x">'), '[图片]')
 })
 
 test('official text splits without losing content', () => {
@@ -736,7 +777,7 @@ test('engine replies to the owner and records the exchange', async () => {
     await saveConfig(root, { qq: { enabled: true } })
     const result = await engine.handleOwnerMessage({ text: '今天有点累', channel: 'qq', userId: '1', eventId: 'evt-1' })
     assert.equal(result.ok, true)
-    assert.equal(result.reply, '嗯，知道了。早点睡。')
+    assert.equal(result.reply, '嗯，知道了\n早点睡')
     assert.equal(sent.options.replyTo, 'evt-1')
     const chat = await readChat(root, 10)
     assert.equal(chat.length, 2)
@@ -759,7 +800,7 @@ test('engine proactive marks an event shared and respects quiet hours', async ()
     const result = await engine.proactive({ force: true, beatKey: '2026-11-07 18:30', now: Date.parse('2026-11-07T18:30:00+08:00') })
     assert.equal(result.ok, true)
     assert.equal(result.skipped, false)
-    assert.equal(result.text, '今天年糕把小鱼干叼走了，笑死。')
+    assert.equal(result.text, '今天年糕把小鱼干叼走了，笑死')
     assert.ok(result.event)
     const cfg = await loadConfig(root)
     const day = await getDay(root, cfg, result.event.id.split('-').slice(1, 4).join('-'))
@@ -874,7 +915,7 @@ test('heartbeat tick sends a proactive message at the jittered minute', async ()
     assert.equal(state.beatCount, 1)
     const chat = await readChat(root, 5)
     assert.equal(chat.at(-1).channel, 'proactive')
-    assert.equal(chat.at(-1).text, '刚把饭端上桌。')
+    assert.equal(chat.at(-1).text, '刚把饭端上桌')
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -1160,6 +1201,21 @@ test('sanitize strips markdown artifacts from QQ text', () => {
   assert.equal(sanitize('`代码`'), '代码')
   assert.equal(sanitize('普通聊天，没有格式。'), '普通聊天，没有格式。')
   assert.equal(sanitize('```\n块\n```'), '块')
+})
+
+test('naturalizePunctuation turns each sentence into one bubble', () => {
+  assert.equal(naturalizePunctuation('嗯，知道了。早点睡。'), '嗯，知道了\n早点睡')
+  assert.equal(naturalizePunctuation('醒了 隔壁电钻八点就开工。'), '醒了\n隔壁电钻八点就开工')
+  assert.equal(naturalizePunctuation('今天下雨了。\n就不出门了。'), '今天下雨了\n就不出门了')
+  assert.equal(naturalizePunctuation('真的？太好了！'), '真的？\n太好了！')
+  assert.equal(naturalizePunctuation('好。。'), '好')
+  assert.equal(naturalizePunctuation('……在。'), '……在')
+  assert.equal(naturalizePunctuation('他说“好。”'), '他说“好”')
+  assert.equal(naturalizePunctuation('嗯，知道了。早点睡。', { enabled: false }), '嗯，知道了。早点睡。')
+  assert.equal(naturalizePunctuation(''), '')
+  const sample = naturalizePunctuation('醒了 隔壁电钻八点就开工。\n你在干嘛呢？昨天一天没影。')
+  assert.equal(sample, '醒了\n隔壁电钻八点就开工\n你在干嘛呢？\n昨天一天没影')
+  assert.deepEqual(splitBubbles(sample), ['醒了', '隔壁电钻八点就开工', '你在干嘛呢？', '昨天一天没影'])
 })
 
 test('typoize is low-rate, deterministic and produces a fix bubble', () => {
